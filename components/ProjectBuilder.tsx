@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Project, Message, ViewMode, User, Suggestion } from '../types';
-import { handleUserRequest, generateProjectTitle, generateSuggestions, SupervisorCallbacks } from '../services/geminiService';
+import { Project, Message, ViewMode, User, Suggestion, BuildState } from '../types';
+import { generateProjectTitle, generateSuggestions, handleUserIntent } from '../services/geminiService';
 import { cloudService } from '../services/cloudService';
 import { useTranslation } from '../utils/translations';
 import ChatInterface from './ChatInterface';
@@ -12,12 +12,7 @@ import ManageDomainsModal from './ManageDomainsModal';
 import { ArrowLeft, MessageSquare, Eye, Monitor, Tablet, Smartphone, Globe, Loader2 } from 'lucide-react';
 
 type DeviceMode = 'desktop' | 'tablet' | 'mobile';
-
-interface BuildState {
-    plan: string[];
-    currentStep: number;
-    error: string | null;
-}
+interface StagedImage { file: File; previewUrl: string; }
 
 interface ProjectBuilderProps {
   user: User;
@@ -30,7 +25,6 @@ const ProjectBuilder: React.FC<ProjectBuilderProps> = ({ user }) => {
   const [project, setProject] = useState<Project | null>(null);
   const [loading, setLoading] = useState(true);
   
-  const [isThinking, setIsThinking] = useState(false);
   const [buildState, setBuildState] = useState<BuildState | null>(null);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   
@@ -43,19 +37,22 @@ const ProjectBuilder: React.FC<ProjectBuilderProps> = ({ user }) => {
   
   const desktopPublishRef = useRef<HTMLDivElement>(null);
   const mobilePublishRef = useRef<HTMLDivElement>(null);
-  
+
   const { t, dir } = useTranslation();
 
+  const isThinking = project?.status === 'generating';
   const isFirstGeneration = isThinking && project ? (!project.code.html && !project.code.javascript) : false;
+  const isUpdating = isThinking && !isFirstGeneration;
 
+  // Initial project fetch
   const fetchProject = async () => {
       if (!projectId) return;
       try {
           const p = await cloudService.getProject(projectId);
           if (p) {
               setProject(p);
+              setBuildState(p.buildState || null);
           } else {
-              // Project not found or no access
               navigate('/dashboard');
           }
       } catch (err) {
@@ -65,18 +62,37 @@ const ProjectBuilder: React.FC<ProjectBuilderProps> = ({ user }) => {
           setLoading(false);
       }
   };
-
+  
   useEffect(() => {
     fetchProject();
   }, [projectId]);
+
+  // Real-time project updates subscription
+  useEffect(() => {
+    if (!projectId) return;
+    const { unsubscribe } = cloudService.subscribeToProjectChanges(projectId, (updatedProject) => {
+      setProject(updatedProject);
+      setBuildState(updatedProject.buildState || null);
+    });
+    return () => unsubscribe();
+  }, [projectId]);
+
+  // Generate suggestions when build finishes
+  useEffect(() => {
+    if (project && project.status === 'idle') {
+      const lastMessage = project.messages[project.messages.length - 1];
+      if (lastMessage && lastMessage.role === 'assistant' && !lastMessage.content.toLowerCase().includes('error')) {
+        generateSuggestions(project.messages, project.code).then(setSuggestions);
+      }
+    }
+  }, [project?.status, project?.messages.length]);
+
 
   // Dropdown close logic
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as Node;
-      const inDesktop = desktopPublishRef.current?.contains(target);
-      const inMobile = mobilePublishRef.current?.contains(target);
-      if (!inDesktop && !inMobile) {
+      if (!desktopPublishRef.current?.contains(target) && !mobilePublishRef.current?.contains(target)) {
         setShowPublishDropdown(false);
       }
     };
@@ -85,92 +101,52 @@ const ProjectBuilder: React.FC<ProjectBuilderProps> = ({ user }) => {
   }, []);
 
   const handleStopGeneration = () => {
-    setIsThinking(false);
-    setBuildState(null);
+    if (project) {
+        const stoppedProject = { ...project, status: 'idle' } as Project;
+        setProject(stoppedProject);
+        cloudService.saveProject(stoppedProject);
+    }
   };
 
   const handleRetry = (prompt: string) => {
       if(project) {
           const updated = {...project, messages: project.messages.slice(0, -1)};
-          setProject(updated);
-          handleSendMessage(prompt);
+          setProject(updated); // Optimistic update
+          cloudService.saveProject(updated).then(() => {
+              handleSendMessage(prompt, []);
+          });
       }
   };
-
+  
   const handleAutoFix = () => {
       if (project) {
-          handleSendMessage("The current code seems to have an error. Please analyze it, find the root cause, and provide a complete fix.");
+          handleSendMessage("The current code has an error. Please find the root cause and provide a fix.", []);
       }
   };
 
-  const handleSendMessage = async (content: string) => {
-    if (!project || !user) return;
+  const handleSendMessage = async (content: string, images: StagedImage[]) => {
+    if (!project || !user || isThinking) return;
     
-    // Optimistic update
-    const userMsg: Message = { id: crypto.randomUUID(), role: 'user', content, timestamp: Date.now() };
-    const updatedProject = { ...project, messages: [...project.messages, userMsg], updatedAt: Date.now() };
-    setProject(updatedProject);
+    setSuggestions([]);
     
-    setIsThinking(true);
-    setBuildState({ plan: [], currentStep: 0, error: null });
-    setSuggestions([]); // Clear suggestions while thinking
+    const { isArchitect, response } = await handleUserIntent(project, content);
 
-    // Generate title if it's the first message
-    if (updatedProject.messages.filter(m => m.role === 'user').length === 1) {
+    if (!isArchitect && response) {
+        const userMsg: Message = { id: crypto.randomUUID(), role: 'user', content, timestamp: Date.now() };
+        const assistantMsg: Message = { id: crypto.randomUUID(), role: 'assistant', content: response, timestamp: Date.now() };
+        const updatedProject = { ...project, messages: [...project.messages, userMsg, assistantMsg] };
+        setProject(updatedProject);
+        cloudService.saveProject(updatedProject);
+        return;
+    }
+
+    if (project.messages.filter(m => m.role === 'user').length === 0) {
         generateProjectTitle(content).then(title => {
-            setProject(prev => prev ? {...prev, name: title} : null);
+            cloudService.saveProject({ ...project, name: title });
         });
     }
 
-    const callbacks: SupervisorCallbacks = {
-        onPlanUpdate: (plan) => setBuildState(prev => prev ? { ...prev, plan } : { plan, currentStep: 0, error: null }),
-        onStepStart: (stepIndex) => setBuildState(prev => prev ? { ...prev, currentStep: stepIndex, error: null } : null),
-        onChunkComplete: (code, explanation) => {
-            const aiMsg: Message = { id: crypto.randomUUID(), role: 'assistant', content: explanation, timestamp: Date.now() };
-            setProject(prev => prev ? { ...prev, code, messages: [...prev.messages, aiMsg] } : null);
-        },
-        onSuccess: async (finalCode, finalExplanation) => {
-            const aiMsg: Message = { id: crypto.randomUUID(), role: 'assistant', content: finalExplanation, timestamp: Date.now() };
-            
-            // Save final state
-            setProject(prev => {
-                if (!prev) return null;
-                const completed = { ...prev, code: finalCode, messages: [...prev.messages, aiMsg], status: 'idle' } as Project;
-                cloudService.saveProject(completed).catch(console.error);
-                return completed;
-            });
-            setIsThinking(false); 
-            setBuildState(null);
-
-            // Generate next suggestions
-            try {
-                const nextSteps = await generateSuggestions([...updatedProject.messages, aiMsg], finalCode);
-                setSuggestions(nextSteps);
-            } catch (err) {
-                console.error("Error generating suggestions:", err);
-            }
-        },
-        onError: (error, retriesLeft) => setBuildState(prev => prev ? { ...prev, error: `${error} Retrying...` } : null),
-        onFinalError: (error) => {
-            const errorMsg: Message = { id: crypto.randomUUID(), role: 'assistant', content: `Error: ${error}`, timestamp: Date.now() };
-            setProject(prev => {
-                if (!prev) return null;
-                const failed = { ...prev, messages: [...prev.messages, errorMsg], status: 'idle' } as Project;
-                cloudService.saveProject(failed).catch(console.error);
-                return failed;
-            });
-            setIsThinking(false); setBuildState(null);
-        }
-    };
-
-    try {
-        await handleUserRequest(content, updatedProject.messages, updatedProject.code, callbacks);
-        // We also save after initiating request to persist the user message
-        await cloudService.saveProject(updatedProject);
-    } catch (e) {
-        console.error("Error in generation:", e);
-        setIsThinking(false);
-    }
+    await cloudService.triggerBuild(project, content, images);
   };
 
   if (loading) return <div className="h-screen flex items-center justify-center bg-[#0f172a] text-white"><Loader2 className="animate-spin" size={32} /></div>;
@@ -206,12 +182,9 @@ const ProjectBuilder: React.FC<ProjectBuilderProps> = ({ user }) => {
                  {showPublishDropdown && user && (
                     <div ref={desktopPublishRef} className="absolute top-full right-0 mt-2 z-50">
                         <PublishDropdown 
-                            project={project}
-                            user={user}
+                            project={project} user={user}
                             onManageDomains={() => { setShowManageDomains(true); setShowPublishDropdown(false); }}
-                            onClose={() => setShowPublishDropdown(false)}
-                            onUpdate={fetchProject}
-                        />
+                            onClose={() => setShowPublishDropdown(false)} onUpdate={fetchProject} />
                     </div>
                  )}
             </div>
@@ -224,61 +197,27 @@ const ProjectBuilder: React.FC<ProjectBuilderProps> = ({ user }) => {
             </div>
             <div className={`bg-gray-900 relative flex justify-center items-center p-4 overflow-auto ${viewMode === 'split' ? 'md:w-3/4' : 'md:w-full'} ${mobileTab === 'preview' ? 'flex w-full h-full absolute inset-0 md:static md:h-auto' : 'hidden md:flex'}`}>
                 <div className="hidden md:flex w-full h-full items-center justify-center">
-                    {viewMode === 'code' ? (<div className="h-full w-full" dir="ltr"><CodeEditor code={project.code} isThinking={isThinking} /></div>) : (<div className={`transition-all duration-300 ${deviceSizeClass}`}><PreviewCanvas code={project.code} isGenerating={isFirstGeneration} className="h-full w-full" /></div>)}
+                    {viewMode === 'code' ? (<div className="h-full w-full" dir="ltr"><CodeEditor code={project.code} isThinking={isThinking} /></div>) : (<div className={`transition-all duration-300 ${deviceSizeClass}`}><PreviewCanvas code={project.code} isGenerating={isFirstGeneration} isUpdating={isUpdating} className="h-full w-full" /></div>)}
                 </div>
-                <div className="md:hidden h-full w-full"><PreviewCanvas code={project.code} isGenerating={isFirstGeneration} className="h-full w-full rounded-none border-0" /></div>
+                <div className="md:hidden h-full w-full"><PreviewCanvas code={project.code} isGenerating={isFirstGeneration} isUpdating={isUpdating} className="h-full w-full rounded-none border-0" /></div>
             </div>
         </div>
              
         {/* Bottom Navigation Bar - Mobile Only */}
         <div className="md:hidden fixed bottom-0 left-0 right-0 bg-[#152033]/80 backdrop-blur-xl border-t border-gray-800 flex justify-between items-center h-16 shrink-0 z-30 pb-safe px-4 sm:px-8">
-            {/* Back Button */}
-            <button onClick={() => navigate('/dashboard')} className="flex flex-col items-center justify-center w-14 space-y-1 text-gray-500 hover:text-white">
-                <ArrowLeft size={20} />
-                <span className="text-[10px] font-medium">Back</span>
-            </button>
-
-            {/* Chat Tab */}
-            <button onClick={() => setMobileTab('chat')} className={`flex flex-col items-center justify-center w-14 space-y-1 ${mobileTab === 'chat' ? 'text-indigo-400' : 'text-gray-500'}`}>
-                <MessageSquare size={20} />
-                <span className="text-[10px] font-medium">Chat</span>
-            </button>
-
-            {/* Preview Tab */}
-            <button onClick={() => setMobileTab('preview')} className={`flex flex-col items-center justify-center w-14 space-y-1 ${mobileTab === 'preview' ? 'text-indigo-400' : 'text-gray-500'}`}>
-                <Eye size={20} />
-                <span className="text-[10px] font-medium">Preview</span>
-            </button>
-            
-            {/* Publish Button */}
+            <button onClick={() => navigate('/dashboard')} className="flex flex-col items-center justify-center w-14 space-y-1 text-gray-500 hover:text-white"><ArrowLeft size={20} /><span className="text-[10px] font-medium">Back</span></button>
+            <button onClick={() => setMobileTab('chat')} className={`flex flex-col items-center justify-center w-14 space-y-1 ${mobileTab === 'chat' ? 'text-indigo-400' : 'text-gray-500'}`}><MessageSquare size={20} /><span className="text-[10px] font-medium">Chat</span></button>
+            <button onClick={() => setMobileTab('preview')} className={`flex flex-col items-center justify-center w-14 space-y-1 ${mobileTab === 'preview' ? 'text-indigo-400' : 'text-gray-500'}`}><Eye size={20} /><span className="text-[10px] font-medium">Preview</span></button>
             <div className="relative">
-            <button onClick={() => setShowPublishDropdown(prev => !prev)} className={`flex flex-col items-center justify-center w-14 space-y-1 ${showPublishDropdown ? 'text-indigo-400' : 'text-gray-500'}`}>
-                <Globe size={20} />
-                <span className="text-[10px] font-medium">Publish</span>
-            </button>
-            {/* Dropdown for Mobile */}
-            {showPublishDropdown && user && (
-                <div ref={mobilePublishRef} className="absolute bottom-full right-0 mb-4 z-50 origin-bottom-right">
-                    <PublishDropdown 
-                        project={project}
-                        user={user}
-                        onManageDomains={() => { setShowManageDomains(true); setShowPublishDropdown(false); }}
-                        onClose={() => setShowPublishDropdown(false)}
-                        onUpdate={fetchProject}
-                    />
-                </div>
-            )}
+                <button onClick={() => setShowPublishDropdown(prev => !prev)} className={`flex flex-col items-center justify-center w-14 space-y-1 ${showPublishDropdown ? 'text-indigo-400' : 'text-gray-500'}`}><Globe size={20} /><span className="text-[10px] font-medium">Publish</span></button>
+                {showPublishDropdown && user && (
+                    <div ref={mobilePublishRef} className="absolute bottom-full right-0 mb-4 z-50 origin-bottom-right">
+                        <PublishDropdown project={project} user={user} onManageDomains={() => { setShowManageDomains(true); setShowPublishDropdown(false); }} onClose={() => setShowPublishDropdown(false)} onUpdate={fetchProject} />
+                    </div>
+                )}
             </div>
         </div>
-
-        {showManageDomains && user && (
-            <ManageDomainsModal
-                project={project}
-                user={user}
-                onClose={() => setShowManageDomains(false)}
-                onUpdate={fetchProject}
-            />
-        )}
+        {showManageDomains && user && (<ManageDomainsModal project={project} user={user} onClose={() => setShowManageDomains(false)} onUpdate={fetchProject} />)}
     </div>
   );
 };

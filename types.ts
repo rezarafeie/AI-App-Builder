@@ -8,7 +8,8 @@ export interface GeneratedCode {
 export interface Message {
   id: string;
   role: 'user' | 'assistant' | 'system';
-  content: string;
+  content: string; // The text prompt
+  images?: string[]; // Array of public URLs for stored images
   timestamp: number;
   isThinking?: boolean;
 }
@@ -19,7 +20,7 @@ export interface Suggestion {
 }
 
 export interface Domain {
-  id: string;
+  id:string;
   projectId: string;
   domainName: string;
   status: 'pending' | 'verified' | 'error';
@@ -40,6 +41,13 @@ export interface Collaborator {
   role: CollaboratorRole;
 }
 
+export interface BuildState {
+    plan: string[];
+    currentStep: number;
+    lastCompletedStep: number; // The index of the last successfully completed step. -1 if none.
+    error: string | null;
+}
+
 export interface Project {
   id: string;
   userId: string; // The original owner's ID
@@ -49,6 +57,7 @@ export interface Project {
   code: GeneratedCode;
   messages: Message[];
   status?: 'idle' | 'generating';
+  buildState?: BuildState | null; // Persisted build history
   publishedUrl?: string;
   customDomain?: string;
   // New fields for collaboration and domains

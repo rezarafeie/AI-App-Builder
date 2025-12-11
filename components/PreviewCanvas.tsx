@@ -1,14 +1,13 @@
-
-
-
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { GeneratedCode } from '../types';
 import { constructFullDocument } from '../utils/codeGenerator';
+import { Loader2, RefreshCw } from 'lucide-react';
 
 interface PreviewCanvasProps {
   code: GeneratedCode | null;
   className?: string;
   isGenerating?: boolean;
+  isUpdating?: boolean;
 }
 
 const loadingMessages = [
@@ -24,10 +23,25 @@ const loadingMessages = [
   "Reticulating splines..."
 ];
 
-const PreviewCanvas: React.FC<PreviewCanvasProps> = ({ code, className, isGenerating = false }) => {
+const PreviewCanvas: React.FC<PreviewCanvasProps> = ({ code, className, isGenerating = false, isUpdating = false }) => {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [hasRuntimeError, setHasRuntimeError] = useState(false);
 
   useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+        if (event.data && event.data.type === 'RUNTIME_ERROR') {
+            setHasRuntimeError(true);
+        }
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
+
+  useEffect(() => {
+    // Reset error state when new code is loaded
+    setHasRuntimeError(false);
+
     if (iframeRef.current) {
         const hasCode = code && (code.html || code.javascript);
         
@@ -133,16 +147,43 @@ const PreviewCanvas: React.FC<PreviewCanvasProps> = ({ code, className, isGenera
             `;
         }
     }
-  }, [code, isGenerating]);
+  }, [code, isGenerating, reloadKey]);
+
+  const handleReload = () => {
+    setReloadKey(prev => prev + 1);
+    setHasRuntimeError(false);
+  };
 
   return (
-    <div className={`w-full h-full bg-[#0f172a] rounded-lg overflow-hidden shadow-xl border border-gray-700 ${className}`}>
+    <div className={`w-full h-full bg-[#0f172a] rounded-lg overflow-hidden shadow-xl border border-gray-700 relative group ${className}`}>
+      
+      {code && (code.html || code.javascript) && !isGenerating && !isUpdating && (
+        <button 
+            onClick={handleReload}
+            className="absolute top-4 right-4 z-20 p-2 bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-white rounded-lg backdrop-blur-sm border border-slate-600/50 shadow-lg transition-all opacity-100 md:opacity-0 md:group-hover:opacity-100"
+            title="Reload Preview"
+        >
+            <RefreshCw size={16} />
+        </button>
+      )}
+
       <iframe
         ref={iframeRef}
+        key={reloadKey}
         title="App Preview"
-        className="w-full h-full"
+        className="w-full h-full bg-white"
         sandbox="allow-scripts allow-modals allow-same-origin allow-forms allow-popups"
       />
+      
+      {/* Show overlay ONLY if updating AND there is a runtime error we are trying to fix */}
+      {isUpdating && hasRuntimeError && (
+        <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex flex-col items-center justify-center text-white animate-in fade-in duration-200">
+            <div className="flex items-center gap-3 bg-slate-800 px-6 py-4 rounded-full shadow-xl border border-slate-700">
+                <Loader2 className="animate-spin text-indigo-400" size={20} />
+                <span className="font-medium text-slate-200">Applying changes...</span>
+            </div>
+        </div>
+      )}
     </div>
   );
 };

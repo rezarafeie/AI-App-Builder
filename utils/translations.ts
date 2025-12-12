@@ -40,7 +40,15 @@ const translations = {
     anyone: 'Anyone',
     securityScan: 'Security Scan',
     reviewSecurity: 'Review security',
-    updated: 'Updated'
+    updated: 'Updated',
+    connectBackend: 'Connect your Backend',
+    trash: 'Trash',
+    restore: 'Restore',
+    deleteForever: 'Delete Forever',
+    emptyTrash: 'Trash is empty',
+    emptyTrashDesc: 'Projects you delete will appear here.',
+    projectsDesc: 'Manage and deploy your AI-generated applications.',
+    trashDesc: 'Recover deleted projects or permanently remove them.'
   },
   fa: {
     you: 'شما',
@@ -78,7 +86,15 @@ const translations = {
     anyone: 'همه',
     securityScan: 'اسکن امنیتی',
     reviewSecurity: 'بررسی امنیت',
-    updated: 'به‌روز شد'
+    updated: 'به‌روز شد',
+    connectBackend: 'اتصال به بک‌اند',
+    trash: 'زباله‌دان',
+    restore: 'بازیابی',
+    deleteForever: 'حذف دائمی',
+    emptyTrash: 'زباله‌دان خالی است',
+    emptyTrashDesc: 'پروژه‌هایی که حذف می‌کنید اینجا ظاهر می‌شوند.',
+    projectsDesc: 'مدیریت و انتشار برنامه‌های تولید شده با هوش مصنوعی.',
+    trashDesc: 'بازیابی پروژه‌های حذف شده یا حذف دائمی آنها.'
   }
 };
 

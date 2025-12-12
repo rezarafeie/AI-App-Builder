@@ -1,3 +1,4 @@
+
 import React, { useEffect, useRef, useState } from 'react';
 import { GeneratedCode } from '../types';
 import { constructFullDocument } from '../utils/codeGenerator';
@@ -8,6 +9,7 @@ interface PreviewCanvasProps {
   className?: string;
   isGenerating?: boolean;
   isUpdating?: boolean;
+  onRuntimeError?: (error: string) => void;
 }
 
 const loadingMessages = [
@@ -23,24 +25,29 @@ const loadingMessages = [
   "Reticulating splines..."
 ];
 
-const PreviewCanvas: React.FC<PreviewCanvasProps> = ({ code, className, isGenerating = false, isUpdating = false }) => {
+const PreviewCanvas: React.FC<PreviewCanvasProps> = ({ code, className, isGenerating = false, isUpdating = false, onRuntimeError }) => {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [hasRuntimeError, setHasRuntimeError] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
         if (event.data && event.data.type === 'RUNTIME_ERROR') {
             setHasRuntimeError(true);
+            if (onRuntimeError) {
+                onRuntimeError(event.data.message);
+            }
         }
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, []);
+  }, [onRuntimeError]);
 
   useEffect(() => {
-    // Reset error state when new code is loaded
+    // Reset error state and start loading
     setHasRuntimeError(false);
+    setIsLoading(true);
 
     if (iframeRef.current) {
         const hasCode = code && (code.html || code.javascript);
@@ -147,9 +154,10 @@ const PreviewCanvas: React.FC<PreviewCanvasProps> = ({ code, className, isGenera
             `;
         }
     }
-  }, [code, isGenerating, reloadKey]);
+  }, [code, isGenerating, isUpdating, reloadKey]);
 
   const handleReload = () => {
+    setIsLoading(true);
     setReloadKey(prev => prev + 1);
     setHasRuntimeError(false);
   };
@@ -157,6 +165,27 @@ const PreviewCanvas: React.FC<PreviewCanvasProps> = ({ code, className, isGenera
   return (
     <div className={`w-full h-full bg-[#0f172a] rounded-lg overflow-hidden shadow-xl border border-gray-700 relative group ${className}`}>
       
+      {/* Loading Bar Animation Style */}
+      <style>
+        {`
+            @keyframes loading-scan {
+                0% { transform: translateX(-100%); }
+                100% { transform: translateX(100%); }
+            }
+            .loading-bar-shim {
+                animation: loading-scan 1.5s infinite linear;
+                background: linear-gradient(90deg, transparent, #6366f1, transparent);
+            }
+        `}
+      </style>
+
+      {/* Top Loading Bar */}
+      {(isLoading || isGenerating || isUpdating) && (
+          <div className="absolute top-0 left-0 right-0 h-1 z-30 bg-transparent overflow-hidden pointer-events-none">
+              <div className="w-full h-full loading-bar-shim"></div>
+          </div>
+      )}
+
       {code && (code.html || code.javascript) && !isGenerating && !isUpdating && (
         <button 
             onClick={handleReload}
@@ -173,6 +202,7 @@ const PreviewCanvas: React.FC<PreviewCanvasProps> = ({ code, className, isGenera
         title="App Preview"
         className="w-full h-full bg-white"
         sandbox="allow-scripts allow-modals allow-same-origin allow-forms allow-popups"
+        onLoad={() => setIsLoading(false)}
       />
       
       {/* Show overlay ONLY if updating AND there is a runtime error we are trying to fix */}

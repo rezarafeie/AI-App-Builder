@@ -3,10 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>NovaBuilder AI</title>
+    <title>Rafiei Builder AI</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Vazirmatn:wght@300;400;500;700&display=swap" rel="stylesheet">
     <style>
+      html, body, #root {
+        height: 100%;
+        margin: 0;
+        padding: 0;
+      }
       body {
         font-family: 'Inter', 'Vazirmatn', sans-serif;
         background-color: #0f172a; /* Slate 900 */
@@ -28,6 +33,14 @@
         background: #64748b; 
       }
     </style>
+    <!-- Polyfill for process to prevent library crashes -->
+    <script>
+      window.process = {
+        env: {
+          NODE_ENV: 'development'
+        }
+      };
+    </script>
   <script type="importmap">
 {
   "imports": {
@@ -37,10 +50,10 @@
     "react-dom/client": "https://aistudiocdn.com/react-dom@^19.2.1/client",
     "react-dom": "https://aistudiocdn.com/react-dom@^19.2.1",
     "@google/genai": "https://aistudiocdn.com/@google/genai@^1.32.0",
-    "react-dom/": "https://esm.sh/react-dom@^19.2.1/",
     "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@2.39.7?bundle",
     "react-router-dom": "https://esm.sh/react-router-dom@6.22.3?external=react,react-dom",
-    "@remix-run/router": "https://esm.sh/@remix-run/router@1.15.3"
+    "@remix-run/router": "https://esm.sh/@remix-run/router@1.15.3",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/"
   }
 }
 </script>

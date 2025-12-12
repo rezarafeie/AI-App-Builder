@@ -54,15 +54,15 @@ const AuthPage: React.FC<AuthPageProps> = ({ onLogin }) => {
           <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-indigo-600 mb-4 shadow-lg shadow-indigo-500/30">
             <Sparkles className="text-white" size={24} />
           </div>
-          <h1 className="text-2xl font-bold text-white mb-2">Welcome to NovaBuilder</h1>
+          <h1 className="text-2xl font-bold text-white mb-2">Welcome to Rafiei Builder</h1>
           <p className="text-gray-400 text-sm">
             {isLogin ? "Sign in to access your projects" : "Create an account to start building"}
           </p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          
-          {!isLogin && (
+        <form onSubmit={handleSubmit} className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+            
+            {!isLogin && (
             <div className="space-y-1">
                 <label className="text-xs font-medium text-gray-400 ml-1">Full Name</label>
                 <div className="relative">
@@ -77,9 +77,9 @@ const AuthPage: React.FC<AuthPageProps> = ({ onLogin }) => {
                     />
                 </div>
             </div>
-          )}
+            )}
 
-          <div className="space-y-1">
+            <div className="space-y-1">
             <label className="text-xs font-medium text-gray-400 ml-1">Email Address</label>
             <div className="relative">
                 <Mail size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
@@ -92,9 +92,9 @@ const AuthPage: React.FC<AuthPageProps> = ({ onLogin }) => {
                     placeholder="name@example.com"
                 />
             </div>
-          </div>
+            </div>
 
-          <div className="space-y-1">
+            <div className="space-y-1">
             <label className="text-xs font-medium text-gray-400 ml-1">Password</label>
             <div className="relative">
                 <Lock size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
@@ -107,27 +107,27 @@ const AuthPage: React.FC<AuthPageProps> = ({ onLogin }) => {
                     placeholder="••••••••"
                 />
             </div>
-          </div>
+            </div>
 
-          {error && (
+            {error && (
             <div className="p-3 bg-red-900/30 border border-red-800 rounded-lg text-red-200 text-sm flex items-center gap-2">
                 <div className="w-1.5 h-1.5 rounded-full bg-red-500"></div>
                 {error}
             </div>
-          )}
+            )}
 
-          <button 
+            <button 
             type="submit" 
             disabled={loading}
             className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-medium py-2.5 rounded-lg transition-all flex items-center justify-center gap-2 mt-2 shadow-lg shadow-indigo-900/20"
-          >
+            >
             {loading ? <Loader2 size={18} className="animate-spin" /> : (
                 <>
                     {isLogin ? 'Sign In' : 'Create Account'}
                     <ArrowRight size={18} />
                 </>
             )}
-          </button>
+            </button>
         </form>
 
         <div className="mt-6 text-center">
@@ -142,7 +142,7 @@ const AuthPage: React.FC<AuthPageProps> = ({ onLogin }) => {
       </div>
       
       <div className="mt-8 text-center text-xs text-gray-600">
-        <p>Protected by NovaBuilder Cloud Security.</p>
+        <p>Protected by Rafiei Builder Cloud Security.</p>
       </div>
 
     </div>

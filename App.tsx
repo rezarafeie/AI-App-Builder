@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { User } from './types';
@@ -6,6 +7,8 @@ import AuthPage from './components/AuthPage';
 import LandingPage from './components/LandingPage';
 import Dashboard from './components/Dashboard';
 import ProjectBuilder from './components/ProjectBuilder';
+import PreviewPage from './components/PreviewPage';
+import CloudManagementPage from './components/CloudManagementPage';
 import { Loader2 } from 'lucide-react';
 
 const App: React.FC = () => {
@@ -15,7 +18,8 @@ const App: React.FC = () => {
   const location = useLocation();
 
   useEffect(() => {
-    const checkSession = async () => {
+    // Initial check
+    const initSession = async () => {
       try {
         const currentUser = await cloudService.getCurrentUser();
         setUser(currentUser);
@@ -25,7 +29,15 @@ const App: React.FC = () => {
         setLoading(false);
       }
     };
-    checkSession();
+    initSession();
+
+    // Subscribe to auth changes to handle redirects dynamically
+    const unsubscribe = cloudService.onAuthStateChange((u) => {
+      setUser(u);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
   }, []);
 
   const handleLogin = (loggedInUser: User) => {
@@ -56,12 +68,22 @@ const App: React.FC = () => {
         } />
         
         <Route path="/dashboard" element={
-            user ? <Dashboard user={user} onLogout={handleLogout} /> : <Navigate to="/auth" state={{ from: location }} />
+            user ? <Dashboard user={user} onLogout={handleLogout} view="active" /> : <Navigate to="/auth" state={{ from: location }} />
+        } />
+
+        <Route path="/dashboard/trash" element={
+            user ? <Dashboard user={user} onLogout={handleLogout} view="trash" /> : <Navigate to="/auth" state={{ from: location }} />
         } />
         
         <Route path="/project/:projectId" element={
             user ? <ProjectBuilder user={user} /> : <Navigate to="/auth" state={{ from: location }} />
         } />
+        
+        <Route path="/cloud/:projectId" element={
+            user ? <CloudManagementPage user={user} /> : <Navigate to="/auth" state={{ from: location }} />
+        } />
+
+        <Route path="/preview/:projectId" element={<PreviewPage />} />
         
         {/* Fallback */}
         <Route path="*" element={<Navigate to="/" />} />

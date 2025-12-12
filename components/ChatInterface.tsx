@@ -1,23 +1,40 @@
+
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Message, Suggestion, BuildState } from '../types';
-import { Send, Sparkles, Square, RefreshCw, Wrench, Lightbulb, Paperclip, X, Image as ImageIcon, Wind } from 'lucide-react';
+import { Send, Sparkles, Square, RefreshCw, Wrench, Lightbulb, Paperclip, X, Image as ImageIcon, Wind, Loader2, AlertTriangle, Cloud } from 'lucide-react';
 import ThinkingTerminal from './ThinkingTerminal';
+import CloudConnectionTerminal from './CloudConnectionTerminal';
 import { useTranslation } from '../utils/translations';
+import { fileToBase64 } from '../services/cloudService';
 
-interface StagedImage {
+interface ImageUpload {
+  id: string;
   file: File;
   previewUrl: string;
+  serverUrl?: string;
+  base64?: string;
+  uploading: boolean;
+  error?: boolean;
 }
 
 interface ChatInterfaceProps {
   messages: Message[];
-  onSendMessage: (content: string, images: StagedImage[]) => void;
+  onSendMessage: (content: string, images: { url: string; base64: string }[]) => void;
+  onUploadImage?: (file: File) => Promise<string>;
   onStop: () => void;
   onRetry: (prompt: string) => void;
   onAutoFix: () => void;
+  onClearBuildState?: () => void;
+  onConnectDatabase?: () => void;
   isThinking: boolean;
   buildState: BuildState | null;
   suggestions: Suggestion[];
+  isSuggestionsLoading: boolean;
+  runtimeError?: string | null;
+  cloudConnectionStatus?: 'idle' | 'provisioning' | 'waking' | 'success' | 'error';
+  cloudConnectionError?: string | null;
+  onCloudConnectRetry?: () => void;
+  onClearCloudConnectionState?: () => void;
 }
 
 const SUCCESS_SOUND_URL = 'https://cdn.pixabay.com/audio/2022/03/15/audio_2b28b1e36c.mp3';
@@ -39,9 +56,16 @@ const MarkdownRenderer: React.FC<{ content: string }> = ({ content }) => {
   );
 };
 
-const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, onStop, onRetry, onAutoFix, isThinking, buildState, suggestions }) => {
+const ChatInterface: React.FC<ChatInterfaceProps> = ({ 
+    messages, onSendMessage, onUploadImage, onStop, onRetry, onAutoFix, onClearBuildState, onConnectDatabase, isThinking, 
+    buildState, suggestions, isSuggestionsLoading, runtimeError,
+    cloudConnectionStatus = 'idle',
+    cloudConnectionError,
+    onCloudConnectRetry,
+    onClearCloudConnectionState,
+}) => {
   const [input, setInput] = useState('');
-  const [stagedImages, setStagedImages] = useState<StagedImage[]>([]);
+  const [stagedImages, setStagedImages] = useState<ImageUpload[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const successSoundRef = useRef<HTMLAudioElement | null>(null);
@@ -52,15 +76,21 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, 
   useEffect(() => {
     successSoundRef.current = new Audio(SUCCESS_SOUND_URL);
     successSoundRef.current.volume = 0.5;
+    successSoundRef.current.onerror = () => {
+        // Silently fail if audio source is blocked/unavailable
+        successSoundRef.current = null;
+    };
   }, []);
 
   useEffect(() => {
     setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
-  }, [messages, buildState]);
+  }, [messages, buildState, runtimeError, cloudConnectionStatus]);
 
   useEffect(() => {
     if (!isThinking && wasThinkingRef.current) {
-        successSoundRef.current?.play().catch(console.warn);
+        if (successSoundRef.current) {
+            successSoundRef.current.play().catch(() => {}); // Ignore play errors
+        }
     }
     wasThinkingRef.current = isThinking;
   }, [isThinking]);
@@ -79,29 +109,70 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, 
       return true;
   };
 
-  const addFilesToStage = (files: File[]) => {
+  const addFilesToStage = async (files: File[]) => {
       const validFiles = Array.from(files).filter(handleFileValidation);
-      if (validFiles.length > 0) {
-          const newImages: StagedImage[] = validFiles.map(file => ({
-              file,
-              previewUrl: URL.createObjectURL(file)
-          }));
-          setStagedImages(prev => [...prev, ...newImages]);
+      if (validFiles.length === 0) return;
+
+      const newUploads: ImageUpload[] = validFiles.map(file => ({
+          id: crypto.randomUUID(),
+          file,
+          previewUrl: URL.createObjectURL(file),
+          uploading: true
+      }));
+
+      setStagedImages(prev => [...prev, ...newUploads]);
+
+      // Process uploads
+      for (const upload of newUploads) {
+          try {
+              // 1. Generate Base64 for AI (Client-side)
+              const base64 = await fileToBase64(upload.file);
+              
+              // 2. Upload to Supabase for Storage (if callback provided)
+              let serverUrl = upload.previewUrl; // Fallback to local preview if no upload handler (e.g. offline)
+              if (onUploadImage) {
+                 serverUrl = await onUploadImage(upload.file);
+              }
+
+              setStagedImages(prev => prev.map(p => 
+                  p.id === upload.id 
+                  ? { ...p, base64, serverUrl, uploading: false } 
+                  : p
+              ));
+          } catch (error) {
+              console.error("Upload failed", error);
+              setStagedImages(prev => prev.map(p => 
+                  p.id === upload.id 
+                  ? { ...p, uploading: false, error: true } 
+                  : p
+              ));
+          }
       }
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
       if (e.target.files) addFilesToStage(Array.from(e.target.files));
+      // Reset input so same file can be selected again if needed
+      if (fileInputRef.current) fileInputRef.current.value = '';
   };
   
-  const removeStagedImage = (index: number) => {
-      setStagedImages(prev => prev.filter((_, i) => i !== index));
+  const removeStagedImage = (id: string) => {
+      setStagedImages(prev => prev.filter(img => img.id !== id));
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    
+    // Block submit if any images are still uploading
+    if (stagedImages.some(img => img.uploading)) return;
+
     if ((input.trim() || stagedImages.length > 0) && !isThinking) {
-      onSendMessage(input.trim(), stagedImages);
+      // Filter out failed uploads
+      const validImages = stagedImages
+        .filter(img => !img.error && img.serverUrl && img.base64)
+        .map(img => ({ url: img.serverUrl!, base64: img.base64! }));
+
+      onSendMessage(input.trim(), validImages);
       setInput('');
       setStagedImages([]);
     }
@@ -139,8 +210,18 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, 
     return () => window.removeEventListener('paste', pasteHandler);
   }, [pasteHandler]);
 
-  const lastMessageIsError = messages.length > 0 && messages[messages.length - 1].role === 'assistant' && messages[messages.length - 1].content.toLowerCase().includes('error');
-  const shouldShowTerminal = isThinking || (buildState && buildState.plan.length > 0);
+  // Updated logic: Check for actual errors in build state OR explicit error message start
+  const lastMessageIsError = messages.length > 0 && 
+    messages[messages.length - 1].role === 'assistant' && 
+    (
+        // Check for explicit "Error:" prefix from onFinalError
+        messages[messages.length - 1].content.trim().toLowerCase().startsWith('error:') || 
+        // Or if we have an active build error and not currently working
+        (buildState?.error != null && !isThinking)
+    );
+
+  const shouldShowBuildTerminal = isThinking || (buildState && buildState.plan.length > 0);
+  const isUploading = stagedImages.some(img => img.uploading);
 
   return (
     <div className="flex flex-col h-full bg-[#0f172a] relative" onDrop={dropHandler} onDragOver={dragOverHandler} onDragLeave={dragLeaveHandler}>
@@ -161,41 +242,126 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, 
                 {msg.images && msg.images.length > 0 && (
                     <div className={`grid gap-2 p-2 ${msg.images.length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}>
                         {msg.images.map((img, idx) => (
-                            <img key={idx} src={img} alt="Chat attachment" className="rounded-lg max-w-full h-auto object-cover max-h-60" />
+                            <img key={idx} src={img} alt="Chat attachment" className="rounded-lg max-w-full h-auto object-cover max-h-60 border border-slate-700" />
                         ))}
                     </div>
                 )}
                 {msg.content && <div className="px-5 py-3.5"><MarkdownRenderer content={msg.content} /></div>}
+                {msg.requiresAction === 'CONNECT_DATABASE' && onConnectDatabase && (
+                    <div className="px-5 pb-3.5 pt-1">
+                        <button 
+                            onClick={onConnectDatabase}
+                            className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium py-2.5 rounded-lg transition-colors shadow-lg shadow-indigo-900/20"
+                        >
+                            <Cloud size={16} />
+                            Connect to Rafiei Cloud
+                        </button>
+                    </div>
+                )}
              </div>
           </div>
         ))}
         
-        {shouldShowTerminal && (
-          <div className="w-full pl-0 animate-in fade-in slide-in-from-bottom-4 duration-500"><ThinkingTerminal isComplete={!isThinking} plan={buildState?.plan || []} currentStepIndex={buildState?.currentStep || 0} error={buildState?.error || null} /></div>
+        {cloudConnectionStatus !== 'idle' && onClearCloudConnectionState && (
+            <CloudConnectionTerminal
+                status={cloudConnectionStatus}
+                error={cloudConnectionError}
+                onRetry={onCloudConnectRetry}
+                onClose={onClearCloudConnectionState}
+            />
+        )}
+        
+        {cloudConnectionStatus === 'idle' && shouldShowBuildTerminal && (
+          <div className="w-full pl-0 animate-in fade-in slide-in-from-bottom-4 duration-500">
+             <ThinkingTerminal 
+                isComplete={!isThinking} 
+                plan={buildState?.plan || []} 
+                currentStepIndex={buildState?.currentStep || 0} 
+                error={buildState?.error || null} 
+                onRetry={handleRetryClick}
+                onClose={onClearBuildState}
+             />
+          </div>
         )}
 
         {!isThinking && lastMessageIsError && (
             <div className="flex justify-start gap-2 pt-2">
                  <button onClick={handleRetryClick} className="flex items-center gap-2 text-xs bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 px-3 py-1.5 rounded-lg transition-colors border border-indigo-500/30"><RefreshCw size={12}/>Retry</button>
-                 <button onClick={onAutoFix} className="flex items-center gap-2 text-xs bg-slate-600/20 hover:bg-slate-600/40 text-slate-300 px-3 py-1.5 rounded-lg transition-colors border border-slate-500/30"><Wrench size={12}/>Attempt Fix</button>
+                 <button onClick={() => onAutoFix()} className="flex items-center gap-2 text-xs bg-slate-600/20 hover:bg-slate-600/40 text-slate-300 px-3 py-1.5 rounded-lg transition-colors border border-slate-500/30"><Wrench size={12}/>Attempt Fix</button>
+            </div>
+        )}
+
+        {!isThinking && runtimeError && (
+            <div className="mt-4 p-3 bg-red-950/40 border border-red-500/30 rounded-xl flex flex-col gap-3 animate-in fade-in slide-in-from-bottom-2">
+                <div className="flex items-start gap-3">
+                    <div className="p-2 bg-red-500/10 rounded-lg shrink-0">
+                        <AlertTriangle size={16} className="text-red-400" />
+                    </div>
+                    <div className="min-w-0">
+                        <h4 className="text-sm font-medium text-red-200">Runtime Error Detected</h4>
+                        <p className="text-xs text-red-300/70 font-mono mt-1 line-clamp-2">{runtimeError}</p>
+                    </div>
+                </div>
+                <button 
+                    onClick={() => onAutoFix()}
+                    className="flex items-center justify-center gap-2 w-full bg-red-500/10 hover:bg-red-500/20 text-red-300 text-xs font-medium py-2 rounded-lg transition-colors border border-red-500/20"
+                >
+                    <Wrench size={14} />
+                    Auto-Fix Error
+                </button>
             </div>
         )}
         <div ref={messagesEndRef} />
       </div>
 
       <div className="p-4 bg-gradient-to-t from-[#0f172a] via-[#0f172a] to-transparent sticky bottom-0 z-20">
+        
+        {isSuggestionsLoading && !isThinking && suggestions.length === 0 && (
+            <div className="mb-3 flex items-center gap-2 px-2">
+                <Loader2 size={14} className="animate-spin text-indigo-400" />
+                <span className="text-xs text-gray-400">Generating suggestions...</span>
+            </div>
+        )}
+
         {suggestions.length > 0 && !isThinking && (
           <div className="mb-3 flex items-center gap-2 overflow-x-auto no-scrollbar pb-1 px-1"><div className="flex items-center gap-1.5 text-xs font-medium text-indigo-400 shrink-0 px-2"><Lightbulb size={12} /><span>Next:</span></div>{suggestions.map((s, i) => (<button key={i} onClick={() => handleSuggestionClick(s.prompt)} className="whitespace-nowrap bg-[#1e293b] hover:bg-indigo-600/20 hover:text-indigo-300 hover:border-indigo-500/30 text-gray-400 border border-gray-700 rounded-full px-3 py-1 text-xs transition-all duration-200 animate-in fade-in slide-in-from-bottom-2 fill-mode-forwards" style={{ animationDelay: `${i * 100}ms` }}>{s.title}</button>))}</div>
         )}
         <form onSubmit={handleSubmit} className="relative group bg-[#1e293b]/80 backdrop-blur-xl rounded-2xl border border-gray-700/50 shadow-2xl">
           {stagedImages.length > 0 && (
-            <div className="p-2 border-b border-gray-700/50"><div className="flex gap-2 overflow-x-auto">{stagedImages.map((img, i) => (<div key={i} className="relative shrink-0"><img src={img.previewUrl} className="w-16 h-16 rounded-lg object-cover" /><button type="button" onClick={() => removeStagedImage(i)} className="absolute -top-1 -right-1 bg-gray-900/80 text-white rounded-full p-0.5"><X size={12} /></button></div>))}</div></div>
+            <div className="p-2 border-b border-gray-700/50">
+                <div className="flex gap-2 overflow-x-auto">
+                    {stagedImages.map((img, i) => (
+                        <div key={img.id} className="relative shrink-0 w-16 h-16 rounded-lg overflow-hidden border border-gray-600 group/img">
+                            <img src={img.previewUrl} className={`w-full h-full object-cover transition-opacity ${img.uploading ? 'opacity-50' : 'opacity-100'}`} alt="preview" />
+                            
+                            {/* Loading Spinner */}
+                            {img.uploading && (
+                                <div className="absolute inset-0 flex items-center justify-center">
+                                    <Loader2 className="animate-spin text-white" size={20} />
+                                </div>
+                            )}
+
+                             {/* Error State */}
+                             {img.error && (
+                                <div className="absolute inset-0 flex items-center justify-center bg-red-900/50">
+                                    <AlertTriangle className="text-red-400" size={20} />
+                                </div>
+                            )}
+                            
+                            {/* Remove Button */}
+                            <button type="button" onClick={() => removeStagedImage(img.id)} className="absolute top-0.5 right-0.5 bg-black/60 text-white rounded-full p-0.5 hover:bg-red-500 transition-colors">
+                                <X size={12} />
+                            </button>
+                        </div>
+                    ))}
+                </div>
+            </div>
           )}
           <div className="flex items-center">
             <button type="button" onClick={() => fileInputRef.current?.click()} className="p-4 text-gray-400 hover:text-indigo-400 transition-colors"><Paperclip size={20} /></button>
             <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="image/png, image/jpeg, image/webp" multiple className="hidden" />
             <input id="chat-input" type="text" dir="auto" value={input} onChange={(e) => setInput(e.target.value)} placeholder={t('placeholder')} disabled={isThinking} className="w-full bg-transparent text-white placeholder-gray-500 focus:outline-none py-4" />
-            <div className="p-2">{isThinking ? (<button type="button" onClick={onStop} className="relative p-2 rounded-full bg-red-500/10 text-red-500 hover:bg-red-500/20" title="Stop"><div className="absolute inset-0 border-2 border-red-500/30 border-t-red-500 rounded-full animate-spin"></div><Square size={14} fill="currentColor" /></button>) : (<button type="submit" disabled={!input.trim() && stagedImages.length === 0} className="p-2 bg-indigo-600 rounded-xl text-white hover:bg-indigo-500 disabled:opacity-0 disabled:scale-75 transition-all duration-300 shadow-lg shadow-indigo-500/20"><Send size={18} /></button>)}</div>
+            <div className="p-2">{isThinking ? (<button type="button" onClick={onStop} className="relative p-2 rounded-full bg-red-500/10 text-red-500 hover:bg-red-500/20" title="Stop"><div className="absolute inset-0 border-2 border-red-500/30 border-t-red-500 rounded-full animate-spin"></div><Square size={14} fill="currentColor" /></button>) : (<button type="submit" disabled={(!input.trim() && stagedImages.length === 0) || isUploading} className="p-2 bg-indigo-600 rounded-xl text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed disabled:scale-100 transition-all duration-300 shadow-lg shadow-indigo-500/20"><Send size={18} /></button>)}</div>
           </div>
         </form>
       </div>
